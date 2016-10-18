@@ -14,8 +14,9 @@ import time
 import zmq
 import waggle.logging
 
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+  level=logging.DEBUG,
+  format='%(asctime)s - %(levelname)s - %(message)s')
 
 beehive_reporter = waggle.logging.getLogger('wellness')
 
@@ -25,8 +26,7 @@ beehive_reporter = waggle.logging.getLogger('wellness')
 
 # Run a command and capture it's output
 def run_command(command):
-  p = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
+  p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
   return iter(p.stdout.readline, b'')
 
 # Get the Beehive server hostname
@@ -49,6 +49,13 @@ def reset_deadman_trigger():
   
 def log_message(message):
   os.system("logger -t wellness " + message)
+
+def shutdown(warning = False):
+  if warning:
+    rc = os.system("shutdown -h -k +1")
+    return rc
+  else:
+    os.system("shutdown -h now")
 
 def send_to_beehive(data, type="INFO"):
   """
@@ -228,6 +235,7 @@ class wagmanListener(threading.Thread):
     self.status = {}
     self.currents = self.temp = self.hb = {'nc':-100, 'gn':-100, 'cs':-100}
     self.error = ""
+    self.warn_shutdown = True
 
   def close(self):
     self.isClosed = True
@@ -299,6 +307,15 @@ class wagmanListener(threading.Thread):
       if prefix == "nc":
         if content == "heartbeat":
           self.nc_hb += 1
+        elif "stopping" in content:
+          # When Wagman tries to shut down nc
+          # First, warn system
+          # second, shutdown immediately
+          if self.warn_shutdown:
+            shutdown(warning=True)
+            self.warn_shutdown = False
+          else:
+            shutdown(warning=False)
         else:
           self.status['nc_info'] = content
 
@@ -337,7 +354,6 @@ class wagmanListener(threading.Thread):
             self.currents['cs'] = splits[2]
         except:
           pass
-
       else:
         self.status[prefix] = content
 
