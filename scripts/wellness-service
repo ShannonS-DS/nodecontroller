@@ -12,6 +12,7 @@ import logging
 import sys
 import time
 import zmq
+import json
 import waggle.logging
 
 logging.basicConfig(
@@ -61,6 +62,9 @@ def send_to_beehive(data, type="INFO"):
   """
     Send message to beehive through RabbitMQ running on the node
   """
+  if isinstance(data, dict):
+    data = json.dumps(data)
+
   if type == "INFO":
     beehive_reporter.info(data)
   elif type == "ERROR":
@@ -70,6 +74,10 @@ def send_to_beehive(data, type="INFO"):
   else:
     beehive_reporter.log(data)
 
+def log_all(msg):
+  log_message(str(msg))
+  logging.info(str(msg))
+  send_to_beehive(msg)
 
 ###########################
 ##### Wellness Checks #####
@@ -197,7 +205,6 @@ def get_shutdown_info(history_count=4):
 
 def disk_usage(path="/"):
   """Return disk usage statistics about the given path.
-
   Returned valus is a named tuple with attributes 'total', 'used' and
   'free', which are the amount of total, used and free space, in bytes.
   """
@@ -430,26 +437,32 @@ def reset_wagman():
 # Check list
 #   contains category, entity, how to inspect, cycle (in seconds), report when fails...
 #   function must return True/False result and corresponding message in a list
+RESET_DEADMAN_TRIGGER_CHECKS = 'reset_deadman_trigger_checks'
+WAGMAN_RESET_CHECKS = 'wagman_reset_checks'
+SYSTEM_CHECKS = 'system_checks'
+WAGMAN_CHECKS = 'wagman_checks'
+
 checklist = [
-  # system check
-  ['system', 'Disk available', disk_usage, 1800, True],
-  ['system', 'Host name', get_host_name, 10000, False],
-  ['system', 'Reboots', get_boot_info, 10000, False],
-  ['system', 'Shutdowns', get_shutdown_info, 10000, False],
-  ['system', 'Temperature', get_current_cpu_temp, 60, True],
-  ['system', 'USB Modem', check_USB_modem, 60, False],
-  ['system', 'Network Interface', check_network_interface, 60, False],
-  ['system', 'Local sshd', check_local_sshd, 60, False],
-  # Wagman check
-  ['wagman', 'Wagman status', check_wagman_status, 60, False],
-  ['wagman', 'Wagman Comm. failure', check_wagman_failure, 1, True],
-  ['wagman', 'Wagman power consumption', get_wagman_curr, 60, True],
-  ['wagman', 'Wagman temp', get_wagman_temp, 60, True],
-  ['wagman', 'Wagman heartbeats', get_wagman_hb, 6, False],
-  # Beehive check
-  ['beehive', 'Beehive DNS', check_beehive_DNS, 1800, False],
-  ['beehive', 'Beehive ping', check_beehive_ping, 1800, False],
-  ['beehive', 'Beehive SSHD', check_beehive_sshd, 1800, False]
+  # Format
+  # [ CHECK_CATEGORY, CHECK_ITEM, FUNCTION_NAME, CHECK_PERIOD, REPORT_TO_BEEHIVE_WHEN_FAILS]
+  [RESET_DEADMAN_TRIGGER_CHECKS,'USB Modem', check_USB_modem, 60, False],
+  [RESET_DEADMAN_TRIGGER_CHECKS, 'Network Interface', check_network_interface, 60, False],
+  [RESET_DEADMAN_TRIGGER_CHECKS, 'Local sshd', check_local_sshd, 60, False],
+  [RESET_DEADMAN_TRIGGER_CHECKS, 'Beehive DNS', check_beehive_DNS, 1800, False],
+  [RESET_DEADMAN_TRIGGER_CHECKS, 'Beehive ping', check_beehive_ping, 1800, False],
+  [RESET_DEADMAN_TRIGGER_CHECKS, 'Beehive SSHD', check_beehive_sshd, 1800, False],
+
+  [WAGMAN_RESET_CHECKS, 'Wagman Comm. failure', check_wagman_failure, 60, True],
+
+  [SYSTEM_CHECKS, 'Disk available', disk_usage, 1800, True],
+  [SYSTEM_CHECKS, 'Host name', get_host_name, 10000, False],
+  [SYSTEM_CHECKS, 'Reboots', get_boot_info, 10000, False],
+  [SYSTEM_CHECKS, 'Shutdowns', get_shutdown_info, 10000, False],
+  [SYSTEM_CHECKS, 'Temperature', get_current_cpu_temp, 60, True],
+
+  [WAGMAN_CHECKS, 'Wagman status', check_wagman_status, 60, False],
+  [WAGMAN_CHECKS, 'Wagman temp', get_wagman_temp, 60, True],
+  [WAGMAN_CHECKS, 'Wagman heartbeats', get_wagman_hb, 6, False]
 ]
 
 last_wagman_status_time = time.time()
@@ -472,7 +485,7 @@ MSG = 'message'
 
 logging.info("Wellness service started")
 while True:
-  # current_time = time.time()
+  current_time = time.time()
 
   # Recovery status check
   if in_recovery():
@@ -511,24 +524,45 @@ while True:
       if not result and report:
         log = {'category':category,'entity':entity}
         log.update(item)
-        logging.info("Failure in %s" % str(log))
         reporting.append(log)
       elif first_time_report:
         log = {'category':category,'entity':entity}
         log.update(item)
-        logging.info("First time reporting: %s" % str(log))
         reporting.append(log)
 
       logging.debug("update performed %s:%s -> %s" % (category, entity, str(item)))
       item[LAST_UPDATED] = time.time()
       status[category][entity] = item
 
+  # Report failures that need to be reported
   if reporting:
-    for item in reporting:
-      send_to_beehive(str(item))
+    deadman_trigger = True
+      log_all(item)
     reporting = []
+
+  # Reset deadman trigger
+  reset = True
+  for check in status[RESET_DEADMAN_TRIGGER_CHECKS]:
+    if check[RESULT] == False:
+      reset = False
+      break
+
+  if reset:
+    reset_deadman_trigger()
+
+  # Wagman reset
+  reset = False
+  for check in status[WAGMAN_RESET_CHECKS]:
+    if check[RESULT] == False:
+      reset = True
+  wagman_silence_duration = current_time - last_wagman_status_time
+  if reset and wagman_silence_duration >= max_wagman_silence_duration:
+    reset_wagman()
+  else:
+    last_wagman_status_time = time.time()
+
   # Prevent using max CPU
-  time.sleep(0.5)
+  time.sleep(1)
 
 
 

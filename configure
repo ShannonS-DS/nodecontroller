@@ -123,22 +123,19 @@ mkdir -p /var/dc/incoming_msgs
 mkdir -p /var/log/comms
 
 
-
-
-# transition from supervisor to upstart
-rm -f /etc/supervisor/conf.d/waggle_*
-
-
-# copy upstart scripts
-#cp ${current_dir}/upstart/waggle-* /etc/init/
+# install RabbitMQ configuration
+cp -r /usr/lib/waggle/nodecontroller/etc/rabbitmq /etc
 
 # copy systemd scripts
-cp ${current_dir}/systemd/waggle-* /etc/systemd/system
+cp ${current_dir}/systemd/* /etc/systemd/system
 systemctl enable waggle-communications.service
 #systemctl enable waggle-data-cache.service
 systemctl enable waggle-reverse-tunnel.service
 systemctl enable waggle-wagman-publisher.service
 systemctl enable waggle-wagman-server.service
+systemctl enable waggle-configure-rabbitmq.service
+systemctl enable waggle-wellness.service
+systemctl enable wwan.service
 
 
 
