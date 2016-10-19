@@ -536,7 +536,7 @@ while True:
 
   # Report failures that need to be reported
   if reporting:
-    deadman_trigger = True
+    for item in reporting:
       log_all(item)
     reporting = []
 
