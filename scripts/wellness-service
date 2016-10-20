@@ -542,7 +542,8 @@ while True:
 
   # Reset deadman trigger
   reset = True
-  for check in status[RESET_DEADMAN_TRIGGER_CHECKS]:
+  for entity in status[RESET_DEADMAN_TRIGGER_CHECKS]:
+    check = status[RESET_DEADMAN_TRIGGER_CHECKS][entity]
     if check[RESULT] == False:
       reset = False
       break
@@ -552,7 +553,8 @@ while True:
 
   # Wagman reset
   reset = False
-  for check in status[WAGMAN_RESET_CHECKS]:
+  for entity in status[WAGMAN_RESET_CHECKS]:
+    check = status[WAGMAN_RESET_CHECKS][entity]
     if check[RESULT] == False:
       reset = True
   wagman_silence_duration = current_time - last_wagman_status_time
