@@ -95,7 +95,7 @@ def check_USB_modem():
   for line in output:
     if (b"Wireless" in line) or \
        (b"Realtek" in line):
-      return True, line
+      return True, str(line)
 
   return False, 'None'
 
@@ -111,7 +111,7 @@ def check_network_interface():
        (b"eth" in line):
       next_line = True
     elif next_line and (b"inet addr:" in line):
-      return True, line
+      return True, str(line)
     else:
       next_line = False
   return False, 'None'
