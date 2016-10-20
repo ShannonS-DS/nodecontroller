@@ -43,7 +43,7 @@ def get_beehive_hostname():
 beehive_hostname = get_beehive_hostname()
 
 def reset_deadman_trigger():
-  file = "/usr/lib/waggle/waggle_image/alive"
+  file = "/usr/lib/waggle/core/alive"
   rc = os.system("touch " + file + " > /dev/null 2>&1")
   if rc != 0:
     return False
@@ -432,7 +432,7 @@ def get_wagman_hb():
 #########################
 
 def reset_wagman():
-  os.system("/usr/lib/waggle/waggle_image/scripts/reset_wagman.sh")
+  os.system("/usr/lib/waggle/core/scripts/reset_wagman.sh")
 
 # Check list
 #   contains category, entity, how to inspect, cycle (in seconds), report when fails...
@@ -483,6 +483,9 @@ LAST_UPDATED = 'last_updated'
 RESULT = 'result'
 MSG = 'message'
 
+SUCCESS = 'success'
+FAILED = 'failed'
+
 logging.info("Wellness service started")
 while True:
   current_time = time.time()
@@ -515,10 +518,13 @@ while True:
       result = False
       try:
         result, msg = func()
-        item[RESULT] = result
+        if result:
+          item[RESULT] = SUCCESS
+        else:
+          item[RESULT] = FAILED
         item[MSG] = msg
       except Exception as e:
-        item[RESULT] = False
+        item[RESULT] = FAILED
         item[MSG] = 'Function %s call failed: %s' % (str(func), str(e))
 
       if not result and report:
@@ -544,7 +550,7 @@ while True:
   reset = True
   for entity in status[RESET_DEADMAN_TRIGGER_CHECKS]:
     check = status[RESET_DEADMAN_TRIGGER_CHECKS][entity]
-    if check[RESULT] == False:
+    if check[RESULT] == FAILED:
       reset = False
       break
 
@@ -555,7 +561,7 @@ while True:
   reset = False
   for entity in status[WAGMAN_RESET_CHECKS]:
     check = status[WAGMAN_RESET_CHECKS][entity]
-    if check[RESULT] == False:
+    if check[RESULT] == FAILED:
       reset = True
   wagman_silence_duration = current_time - last_wagman_status_time
   if reset and wagman_silence_duration >= max_wagman_silence_duration:
