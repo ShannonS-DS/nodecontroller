@@ -52,10 +52,18 @@ def log_message(message):
   os.system("logger -t wellness " + message)
 
 def shutdown(warning = False):
+  logging = False
+  if beehive_reporter not None:
+    logging = True
+
   if warning:
     rc = os.system("shutdown -h -k +1")
+    if logging:
+      beehive_reporter.info("Node is going to be shutdown by Wagman in a minute")
     return rc
   else:
+    if logging:
+      beehive_reporter.info("Node shuts down itself now!")
     os.system("shutdown -h now")
 
 def send_to_beehive(data, type="INFO"):
@@ -252,7 +260,7 @@ class wagmanListener(threading.Thread):
   def connect(self):
     context = zmq.Context()
     self.socket = context.socket(zmq.SUB)
-    self.socket.setsockopt(zmq.RCVTIMEO, 3000)
+    self.socket.setsockopt(zmq.RCVTIMEO, 5000)
     self.socket.setsockopt(zmq.SUBSCRIBE, b'')
     self.socket.connect ('ipc:///tmp/zeromq_wagman-pub')
     self.nc_hb = self.gn_hb = self.cs_hb = 0
@@ -280,7 +288,7 @@ class wagmanListener(threading.Thread):
     while not self.isClosed:
       msg = ""
       try:
-        msg = socket.recv_string()
+        msg = self.socket.recv_string()
       except (zmq.ZMQError, Exception) as e:
         log_message("Wagman Listener failed %s" % str(e))
         self.disconnect()
@@ -290,7 +298,7 @@ class wagmanListener(threading.Thread):
       if not msg:
         continue
 
-      prefix, _, content = message.partition(':')
+      prefix, _, content = msg.partition(':')
       if prefix == "error":
         self.error = content
         continue
