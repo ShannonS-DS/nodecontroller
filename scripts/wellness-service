@@ -7,19 +7,14 @@ import requests
 from signal import *
 import socket
 import subprocess
-import threading
-import logging
 import sys
 import time
 import zmq
-import json
 import waggle.logging
 
-logging.basicConfig(
-  level=logging.DEBUG,
-  format='%(asctime)s - %(levelname)s - %(message)s')
-
 beehive_reporter = waggle.logging.getLogger('wellness')
+
+
 
 ############################
 ##### Helper Functions #####
@@ -27,7 +22,8 @@ beehive_reporter = waggle.logging.getLogger('wellness')
 
 # Run a command and capture it's output
 def run_command(command):
-  p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  p = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
   return iter(p.stdout.readline, b'')
 
 # Get the Beehive server hostname
@@ -40,8 +36,6 @@ def get_beehive_hostname():
     pass
   return server_host
 
-beehive_hostname = get_beehive_hostname()
-
 def reset_deadman_trigger():
   file = "/usr/lib/waggle/core/alive"
   rc = os.system("touch " + file + " > /dev/null 2>&1")
@@ -51,41 +45,16 @@ def reset_deadman_trigger():
 def log_message(message):
   os.system("logger -t wellness " + message)
 
-def shutdown(warning = False):
-  logging = False
-  if beehive_reporter not None:
-    logging = True
+def subscribe_wagman_status():
+  context = zmq.Context()
+  socket = context.socket(zmq.SUB)
+  socket.setsockopt(zmq.RCVTIMEO, 3000)
+  socket.setsockopt(zmq.SUBSCRIBE, b'')
+  socket.connect ('ipc:///tmp/zeromq_wagman-pub')
+  return socket
 
-  if warning:
-    rc = os.system("shutdown -h -k +1")
-    if logging:
-      beehive_reporter.info("Node is going to be shutdown by Wagman in a minute")
-    return rc
-  else:
-    if logging:
-      beehive_reporter.info("Node shuts down itself now!")
-    os.system("shutdown -h now")
-
-def send_to_beehive(data, type="INFO"):
-  """
-    Send message to beehive through RabbitMQ running on the node
-  """
-  if isinstance(data, dict):
-    data = json.dumps(data)
-
-  if type == "INFO":
-    beehive_reporter.info(data)
-  elif type == "ERROR":
-    beehive_reporter.error(data)
-  elif type == "DEBUG":
-    beehive_reporter.debug(data)
-  else:
-    beehive_reporter.log(data)
-
-def log_all(msg):
-  log_message(str(msg))
-  logging.info(str(msg))
-  send_to_beehive(msg)
+def unsubscribe_wagman_status(socket):
+  socket.close()
 
 ###########################
 ##### Wellness Checks #####
@@ -103,9 +72,9 @@ def check_USB_modem():
   for line in output:
     if (b"Wireless" in line) or \
        (b"Realtek" in line):
-      return True, str(line)
+      return True
 
-  return False, 'None'
+  return False
 
 # Check that there is an IP address listed in either the PPP or
 # eth1 info of ifconfig
@@ -116,41 +85,40 @@ def check_network_interface():
     if (b"eth0" in line):
       continue
     if (b"Point-to-Point Protocol" in line) or \
+       (b"enx" in line) or \
        (b"eth" in line):
       next_line = True
     elif next_line and (b"inet addr:" in line):
-      return True, str(line)
+      return True
     else:
       next_line = False
-  return False, 'None'
+  return False
 
 # DNS lookup of the Beehive server hostname
-def check_beehive_DNS():
-  hostname = beehive_hostname
+def check_beehive_DNS(hostname):
   beehive_ip = ''
   try:
     beehive_ip = socket.gethostbyname(hostname)
-  except Exception as e:
-    return False, str(e)
+  except Exception:
+    return False
 
-  return True, 'Success'
+  return True
 
 # Ping the Beehive server
 # The ICMP port is disabled on the beehive servers for external IPs, so
 # just check that the beehive web portal is up
-def check_beehive_ping():
-  hostname = beehive_hostname
+def check_beehive_ping(hostname):
   rc = os.system("curl " + hostname + "/api/ > /dev/null 2>&1")
   if rc != 0:
-    return False, "Failed"
+    return False
 
-  return True, "Success"
+  return True
 
 # Connect to the local sshd
 def check_local_sshd():
   # To test, add "waggle" user to ThinkPad and setup passwordless key
   command = ['ssh -i /usr/lib/waggle/SSL/guest/id_rsa_waggle_aot_guest_node -x',
-             '-o "ProxyCommand ssh -i /usr/lib/waggle/SSL/guest/id_rsa_waggle_aot_guest_node -q waggle@10.31.81.51 nc -q0 10.31.81.10 22"',
+             '-o "ProxyCommand ssh -i /usr/lib/waggle/SSL/guest/id_rsa_waggle_aot_guest_node -o \\\"StrictHostKeyChecking no\\\" -q waggle@10.31.81.51 nc -q0 10.31.81.10 22"',
              '-o "PasswordAuthentication no"',
              '-o "StrictHostKeyChecking no"',
              '-o "ConnectTimeout 5" waggle@10.31.81.10',
@@ -158,14 +126,13 @@ def check_local_sshd():
   #print(' '.join(command))
   rc = os.system(' '.join(command))
   if rc != 0:
-    return False, "Failed"
+    return False
 
-  return True, "Success"
+  return True
 
 
 # Connect to the Beehive server's sshd
-def check_beehive_sshd():
-  hostname = beehive_hostname
+def check_beehive_sshd(hostname):
   command = ['ssh -i /usr/lib/waggle/SSL/node/key.pem -x',
              '-o "PasswordAuthentication no"',
              '-o "StrictHostKeyChecking no"',
@@ -174,266 +141,25 @@ def check_beehive_sshd():
   #print(' '.join(command))
   rc = os.system(' '.join(command))
   if rc != 0:
-    return False, "Failed"
+    return False
 
-  return True, "Success"
+  return True
 
-def get_host_name():
-  """
-    Returns host name containing which device (from uSD and eMMC) is used to boot 
-  """
-  ret = ""
-  try:
-    ret = subprocess.getoutput(["uname -n"])
-  except Exception as e:
-    return False, "error on getting host name: %s" % str(e)
-  return True, ret
-
-def get_boot_info(history_count=3):
-  """
-    Returns history of reboot and shutdown.
-  """
-  ret = ""
-  try:
-    ret = subprocess.getoutput(["last -x reboot | head -n %d" % (history_count)])
-  except Exception as e:
-    return False, "error on getting boot messages: %s" % str(e)
-  return True, ret
-
-def get_shutdown_info(history_count=4):
-  """
-    Returns history of reboot and shutdown.
-  """
-  ret = ""
-  try:
-    ret = subprocess.getoutput(["last -x shutdown | head -n %d" % (history_count)])
-  except Exception as e:
-    return False, "error on getting shutdown messages: %s" % str(e)
-  return True, ret
-
-def disk_usage(path="/"):
-  """Return disk usage statistics about the given path.
-  Returned valus is a named tuple with attributes 'total', 'used' and
-  'free', which are the amount of total, used and free space, in bytes.
-  """
-  total = used = free = 0
-  ret = ""
-  try:
-    st = os.statvfs(path)
-    free = st.f_bavail * st.f_frsize
-    total = st.f_blocks * st.f_frsize
-    used = (st.f_blocks - st.f_bfree) * st.f_frsize
-    ret = "(total=%d, used=%d, free=%d)" % (total, used, free)
-  except Exception as e:
-    return False, "Failed"
-  return True, ret
-
-def get_current_cpu_temp():
-  temperature_file = '/sys/class/thermal/thermal_zone0/temp'
-  tempC = 0
-  if os.path.isfile(temperature_file):
-    return True, str(int(open(temperature_file).read()) / 1e3)
-  else:
-    return False, "Temp not available"
-
-class wagmanListener(threading.Thread):
-  '''
-    A thread to listen Wagman status from the ZMQ publisher
-  '''
-  def __init__(self):
-    threading.Thread.__init__(self)
-    self.socket = None
-    self.isConnected = False
-    self.isClosed = False
-
-    self.nc_hb = self.gn_hb = self.cs_hb = 0
-    self.status = {}
-    self.currents = self.temp = self.hb = {'nc':-100, 'gn':-100, 'cs':-100}
-    self.error = ""
-    self.warn_shutdown = True
-
-  def close(self):
-    self.isClosed = True
-    if self.isConnected:
-      self.disconnect()
-
-  def connect(self):
-    context = zmq.Context()
-    self.socket = context.socket(zmq.SUB)
-    self.socket.setsockopt(zmq.RCVTIMEO, 5000)
-    self.socket.setsockopt(zmq.SUBSCRIBE, b'')
-    self.socket.connect ('ipc:///tmp/zeromq_wagman-pub')
-    self.nc_hb = self.gn_hb = self.cs_hb = 0
-
-  def disconnect(self):
-    if self.socket != None and self.isConnected:
-      self.socket.close()
-      self.isConnected = False
-
-  def get(self, key):
-    if 'error' in key:
-      return self.error
-    elif 'status' in key:
-      return str(self.status)
-    elif 'current' in key:
-      return str(self.currents)
-    elif 'temp' in key:
-      return str(self.temp)
-    elif 'hb' in key or 'heartbeat' in key:
-      return str(self.hb)
-    else:
-      return ""
-
-  def run(self):
-    while not self.isClosed:
-      msg = ""
-      try:
-        msg = self.socket.recv_string()
-      except (zmq.ZMQError, Exception) as e:
-        log_message("Wagman Listener failed %s" % str(e))
-        self.disconnect()
-        time.sleep(3)
-        self.connect()
-
-      if not msg:
-        continue
-
-      prefix, _, content = msg.partition(':')
-      if prefix == "error":
-        self.error = content
-        continue
-      prefix, _, content = (content.strip()).partition(' ')
-
-      #********************************************#******************************************#
-      # prefix                   # content                  #
-      #********************************************#******************************************#
-      # id (wagman id)               #                      #
-      # date (wagman system date)          #                      #
-      # cu (consumming current in each power tab)  #                      #
-      # th (temperature difference between checks) #                      #
-      # fails (# of fail to turn on)         #                      #
-      # enabled (tab status)             #                      #
-      # media (boot media)             #  SD / EMMC               #
-      # gn (guest node)              #  hbeat / start / fault timeout / killing #
-      # nc (nodecontroller)            #  hbeat                   #
-      # cs (coresense)               #  hbeat / start             #
-      #********************************************#******************************************#
-
-      if prefix == "nc":
-        if content == "heartbeat":
-          self.nc_hb += 1
-        elif "stopping" in content:
-          # When Wagman tries to shut down nc
-          # First, warn system
-          # second, shutdown immediately
-          if self.warn_shutdown:
-            shutdown(warning=True)
-            self.warn_shutdown = False
-          else:
-            shutdown(warning=False)
-        else:
-          self.status['nc_info'] = content
-
-      elif prefix == "gn":
-        if content == "heartbeat":
-          self.gn_hb += 1
-        else:
-          self.status['gn_info'] = content
-          
-      elif prefix == "cs":
-        if content == "heartbeat":
-          self.cs_hb += 1
-        else:
-          self.status['cs_info'] = content
-      
-      elif prefix == "th":
-        try:
-          splits = content.split(' ')
-          if len(splits) < 3:
-            pass
-          else:
-            self.temp['nc'] = splits[0]
-            self.temp['gn'] = splits[1]
-            self.temp['cs'] = splits[2]
-        except:
-          pass
-
-      elif prefix == "cu":
-        try:
-          splits = content.split(' ')
-          if len(splits) < 3:
-            pass
-          else:
-            self.currents['nc'] = splits[0]
-            self.currents['gn'] = splits[1]
-            self.currents['cs'] = splits[2]
-        except:
-          pass
-      else:
-        self.status[prefix] = content
-
-        if prefix == "media":
-          self.hb['nc'] = str(self.nc_hb) + "/6"
-          self.hb['gn'] = str(self.gn_hb) + "/6"
-          self.hb['cs'] = str(self.cs_hb) + "/6"
-
-          self.nc_hb = 0
-          self.gn_hb = 0
-          self.cs_hb = 0
-
-    self.disconnect()
-
-# Run Wagman Listener
-wagman_status = wagmanListener()
-wagman_status.start()
 
 # Check that we can read any WagMan status messages
-def check_wagman_status():
-  if not wagman_status.isClosed:
-    msg = wagman_status.get('status')
-    return True, msg
-  else:
-    return False, "Wagman listener not available"
+def check_wagman_status(socket):
+  message = ""
+  try:
+    while True:
+      message = socket.recv_string()
+      if 'error: not connected to wagman' in message:
+        return False
+  except zmq.ZMQError:
+    pass
 
-# Check that we can read any WagMan status messages
-def check_wagman_failure():
-  if not wagman_status.isClosed:
-    msg = wagman_status.get('error')
-    if msg != "":
-      return False, "Warning %s" % msg
-    return True, "Wagman alive"
-  else:
-    return False, "Wagman listener not available"
-
-def get_wagman_curr():
-  """
-    Get from Wagman the currents being consumed in each power tab 
-  """
-  if not wagman_status.isClosed:
-    msg = wagman_status.get('current')
-    return True, msg
-  else:
-    return False, "Wagman listener not available"
-
-def get_wagman_temp():
-  """
-    Get temperature difference between checks
-  """
-  if not wagman_status.isClosed:
-    msg = wagman_status.get('temp')
-    return True, msg
-  else:
-    return False, "Wagman listener not available"
-
-def get_wagman_hb():
-  """
-    Get heartbeats of devices
-  """
-  if not wagman_status.isClosed:
-    msg = wagman_status.get('hb')
-    return True, msg
-  else:
-    return False, "Wagman listener not available"
+  if len(message) == 0:
+    return False
+  return True
 
 #########################
 ##### Interventions #####
@@ -442,37 +168,21 @@ def get_wagman_hb():
 def reset_wagman():
   os.system("/usr/lib/waggle/core/scripts/reset_wagman.sh")
 
-# Check list
-#   contains category, entity, how to inspect, cycle (in seconds), report when fails...
-#   function must return True/False result and corresponding message in a list
-RESET_DEADMAN_TRIGGER_CHECKS = 'reset_deadman_trigger_checks'
-WAGMAN_RESET_CHECKS = 'wagman_reset_checks'
-SYSTEM_CHECKS = 'system_checks'
-WAGMAN_CHECKS = 'wagman_checks'
 
-checklist = [
-  # Format
-  # [ CHECK_CATEGORY, CHECK_ITEM, FUNCTION_NAME, CHECK_PERIOD, REPORT_TO_BEEHIVE_WHEN_FAILS]
-  [RESET_DEADMAN_TRIGGER_CHECKS,'USB Modem', check_USB_modem, 60, False],
-  [RESET_DEADMAN_TRIGGER_CHECKS, 'Network Interface', check_network_interface, 60, False],
-  [RESET_DEADMAN_TRIGGER_CHECKS, 'Local sshd', check_local_sshd, 60, False],
-  [RESET_DEADMAN_TRIGGER_CHECKS, 'Beehive DNS', check_beehive_DNS, 1800, False],
-  [RESET_DEADMAN_TRIGGER_CHECKS, 'Beehive ping', check_beehive_ping, 1800, False],
-  [RESET_DEADMAN_TRIGGER_CHECKS, 'Beehive SSHD', check_beehive_sshd, 1800, False],
+# Human readable names for the tests in the same sequence that they are run
+test_names = ['USB Modem', 'Network Interface', 'Local sshd',
+              'Beehive DNS', 'Beehive Ping', 'Beehive sshd']
 
-  [WAGMAN_RESET_CHECKS, 'Wagman Comm. failure', check_wagman_failure, 60, True],
+# base_sleep_time = 2  # s
+beehive_hostname = get_beehive_hostname()
 
-  [SYSTEM_CHECKS, 'Disk available', disk_usage, 1800, True],
-  [SYSTEM_CHECKS, 'Host name', get_host_name, 10000, False],
-  [SYSTEM_CHECKS, 'Reboots', get_boot_info, 10000, False],
-  [SYSTEM_CHECKS, 'Shutdowns', get_shutdown_info, 10000, False],
-  [SYSTEM_CHECKS, 'Temperature', get_current_cpu_temp, 60, True],
+base_sleep_time = 60  # (seconds)
 
-  [WAGMAN_CHECKS, 'Wagman status', check_wagman_status, 60, False],
-  [WAGMAN_CHECKS, 'Wagman temp', get_wagman_temp, 60, True],
-  [WAGMAN_CHECKS, 'Wagman heartbeats', get_wagman_hb, 6, False]
-]
+beehive_check_duration = 1800  # (seconds) 30 minutes
+# check Beehive on start up
+beehive_check_time = time.time() - beehive_check_duration - 1
 
+wagman_status = subscribe_wagman_status()
 last_wagman_status_time = time.time()
 max_wagman_silence_duration = 600  # (seconds) 10 minutes
 
@@ -480,21 +190,12 @@ max_wagman_silence_duration = 600  # (seconds) 10 minutes
 """ Clean up when script is terminated """
 """ ################################## """
 def cleanup(signum, stack_frame):
-  wagman_status.close()
+  unsubscribe_wagman_status(wagman_status)
   quit()
 for sig in (SIGINT, SIGQUIT, SIGTERM):
   signal(sig, cleanup)
 """ ################################## """
 
-status = {}
-LAST_UPDATED = 'last_updated'
-RESULT = 'result'
-MSG = 'message'
-
-SUCCESS = 'success'
-FAILED = 'failed'
-
-logging.info("Wellness service started")
 while True:
   current_time = time.time()
 
@@ -502,126 +203,52 @@ while True:
   if in_recovery():
     reset_deadman_trigger()
     log_message("Node Controller is performing a file system recovery.")
+    beehive_reporter.info("Node Controller is performing a file system recovery.")
 
-  # Contains any check item that should be reported
-  reporting = []
+  # Local checks (done every minute)
+  #print("Performing local checks...")
+  local_check_results = [check_USB_modem(),
+                         check_network_interface(),
+                         check_local_sshd()]
 
-  # Do checking
-  # TODO: checking in parallel might be necessary as items in the list increases
-  for category, entity, func, period, report in checklist:
-    # Report all for the first time
-    first_time_report = False
+  # Beehive checks
+  beehive_check_results = []
+  print("Performing Beehive checks...")
+  if (current_time - beehive_check_time) > beehive_check_duration:
+    beehive_check_results = [check_beehive_DNS(beehive_hostname),
+                             check_beehive_ping(beehive_hostname),
+                             check_beehive_sshd(beehive_hostname),]
+    if all(beehive_check_results):
+      beehive_check_time = time.time()
 
-    # Create item if not exist
-    if category not in status:
-      status[category] = {}
-    if entity not in status[category]:
-      status[category][entity] = {}
-      status[category][entity][LAST_UPDATED] = time.time() - 100000
-      first_time_report = True
-
-    item = status[category][entity]
-    # If the item needs to be checked
-    if time.time() - item[LAST_UPDATED] > period:
-      result = False
-      try:
-        result, msg = func()
-        if result:
-          item[RESULT] = SUCCESS
-        else:
-          item[RESULT] = FAILED
-        item[MSG] = msg
-      except Exception as e:
-        item[RESULT] = FAILED
-        item[MSG] = 'Function %s call failed: %s' % (str(func), str(e))
-
-      if not result and report:
-        log = {'category':category,'entity':entity}
-        log.update(item)
-        reporting.append(log)
-      elif first_time_report:
-        log = {'category':category,'entity':entity}
-        log.update(item)
-        reporting.append(log)
-
-      logging.debug("update performed %s:%s -> %s" % (category, entity, str(item)))
-      item[LAST_UPDATED] = time.time()
-      status[category][entity] = item
-
-  # Report failures that need to be reported
-  if reporting:
-    for item in reporting:
-      log_all(item)
-    reporting = []
-
-  # Reset deadman trigger
-  reset = True
-  for entity in status[RESET_DEADMAN_TRIGGER_CHECKS]:
-    check = status[RESET_DEADMAN_TRIGGER_CHECKS][entity]
-    if check[RESULT] == FAILED:
-      reset = False
-      break
-
-  if reset:
+  # Reset deadman trigger if all local and Beehive checks have passed
+  results = local_check_results + beehive_check_results
+  if all(results):
+    #print("Resetting deadman trigger...")
     reset_deadman_trigger()
-
-  # Wagman reset
-  reset = False
-  for entity in status[WAGMAN_RESET_CHECKS]:
-    check = status[WAGMAN_RESET_CHECKS][entity]
-    if check[RESULT] == FAILED:
-      reset = True
-  wagman_silence_duration = current_time - last_wagman_status_time
-  if reset and wagman_silence_duration >= max_wagman_silence_duration:
-    reset_wagman()
+    #print("Node Controller is well.")
+    log_message("Node Controller is well.")
+    beehive_reporter.info("Node Controller is well.")
   else:
+    #print("Logging test failures...")
+    log_message("The following tests failed: " + 
+                str([n for x,n in zip(results,test_names) if not x]) + "\n")
+    beehive_reporter.error("The following tests failed: " +
+                           str([n for x,n in zip(results,test_names) if not x]) + "\n")
+
+  # WagMan checks
+  print("Performing wagman checks...")
+  if check_wagman_status(wagman_status):
+    # WagMan is still sending updates
     last_wagman_status_time = time.time()
+  else:
+    # WagMan stopped sending updates
+    current_time = time.time()
+    wagman_silence_duration = current_time - last_wagman_status_time
+    if wagman_silence_duration >= max_wagman_silence_duration:
+      log_message("WagMan is not well. Resetting WagMan...")
+      beehive_reporter.error("WagMan is not well. Resetting WagMan...")
+      reset_wagman()
+      last_wagman_status_time = time.time()
 
-  # Prevent using max CPU
-  time.sleep(1)
-
-
-
-  # # Local checks (done every minute)
-  # #print("Performing local checks...")
-  # local_check_results = [check_USB_modem(),
-  #                        check_network_interface(),
-  #                        check_local_sshd()]
-
-  # # Beehive checks
-  # beehive_check_results = []
-  # print("Performing Beehive checks...")
-  # if (current_time - beehive_check_time) > beehive_check_duration:
-  #   beehive_check_results = [check_beehive_DNS(beehive_hostname),
-  #                            check_beehive_ping(beehive_hostname),
-  #                            check_beehive_sshd(beehive_hostname),]
-  #   if all(beehive_check_results):
-  #     beehive_check_time = time.time()
-
-  # # Reset deadman trigger if all local and Beehive checks have passed
-  # results = local_check_results + beehive_check_results
-  # if all(results):
-  #   #print("Resetting deadman trigger...")
-  #   reset_deadman_trigger()
-  #   #print("Node Controller is well.")
-  #   log_message("Node Controller is well.")
-  # else:
-  #   #print("Logging test failures...")
-  #   log_message("The following tests failed: " + 
-  #               str([n for x,n in zip(results,test_names) if not x]) + "\n")
-
-  # # WagMan checks
-  # print("Performing wagman checks...")
-  # if check_wagman_status(wagman_status):
-  #   # WagMan is still sending updates
-  #   last_wagman_status_time = time.time()
-  # else:
-  #   # WagMan stopped sending updates
-  #   current_time = time.time()
-  #   wagman_silence_duration = current_time - last_wagman_status_time
-  #   if wagman_silence_duration >= max_wagman_silence_duration:
-  #     log_message("WagMan is not well. Resetting WagMan...")
-  #     reset_wagman()
-  #     last_wagman_status_time = time.time()
-
-  # time.sleep(base_sleep_time)
+  time.sleep(base_sleep_time)
