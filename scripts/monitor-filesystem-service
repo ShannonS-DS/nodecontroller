@@ -1,0 +1,39 @@
+#!/usr/bin/python3
+
+import time
+import logging
+import os
+import subprocess
+import waggle.logging
+import json
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+beehive_reporter = waggle.logging.getLogger('monitor-filesystem')
+
+def get_monitor_target(path='/usr/lib/waggle/nodecontroller/etc/'):
+	config_file = 'monitor-filesystem.conf'
+	targets = []
+
+	if not os.path.isfile(path+config_file):
+		logging.error('Config file not found in %s' % path+config_file)
+		return []
+
+	with open(path+config_file, 'r') as file:
+		for line in file:
+			if '#' in line or line == '':
+				continue
+
+			targets.append(line.strip())
+
+	return targets
+
+if __name__ == "__main__":
+	logging.info('Waggle filesystem monitor started...')
+
+	targets = get_monitor_target()
+	logging.info('Waggle filesystem monitor will monitor the following files/folders')
+	for target in targets:
+		logging.info('....%s' % target)
+
+	
