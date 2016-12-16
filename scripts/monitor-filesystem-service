@@ -6,34 +6,96 @@ import os
 import subprocess
 import waggle.logging
 import json
+import pyinotify
+from pyinotify import WatchManager, Notifier, ProcessEvent, EventsCodes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-beehive_reporter = waggle.logging.getLogger('monitor-filesystem')
+# beehive_reporter = waggle.logging.getLogger('monitor-filesystem')
 
-def get_monitor_target(path='/usr/lib/waggle/nodecontroller/etc/'):
+def get_monitor_target(path='/etc/waggle/'):
 	config_file = 'monitor-filesystem.conf'
 	targets = []
 
 	if not os.path.isfile(path+config_file):
 		logging.error('Config file not found in %s' % path+config_file)
+		logging.error('Please reconfigure nodecontroller')
 		return []
 
 	with open(path+config_file, 'r') as file:
 		for line in file:
+			line = line.strip()
 			if '#' in line or line == '':
 				continue
 
-			targets.append(line.strip())
+			target = line
+			if os.path.isfile(target) or os.path.isdir(target):
+				targets.append(line.strip())
+			else:
+				logging.error('Cannot watch the path: %s' % target)
 
 	return targets
+
+def file_watch_handler(event):
+	file_name, event_type = event
+	print(event_type)
+	if 'MODIFY' in event_type or 'DELETE' in event_type:
+		logging.warn('%s has been modified' % file_name)
+
+def parse_event(event):
+	try:
+		event_split = event.strip().split()
+		print(len(event_split))
+		if len(event_split) == 2:
+			# File watch event
+			file_watch_handler(event)
+		elif len(event_split) == 3:
+			# Folder watch event
+			pass
+		else:
+			raise Exception()
+	except Exception:
+		logging.error('Cannot parse the event: %s' % event)
+
+class PTmp(ProcessEvent):
+	def report(self, event):
+		global logging
+		logging.info('%s has been changed: %s' % (event.pathname, event.maskname))
+
+	def process_IN_ATTRIB(self, event):
+		self.report(event)
+
+	def process_IN_DELETE(self, event):
+		self.report(event)
+
+	def process_IN_MODIFY(self, event):
+		self.report(event)
+
+	def process_IN_CLOSE_WRITE(self, event):
+		self.report(event)
+
+	def process_IN_DELETE_SELF(self, event):
+		self.report(event)
 
 if __name__ == "__main__":
 	logging.info('Waggle filesystem monitor started...')
 
-	targets = get_monitor_target()
+	targets = get_monitor_target(path='../etc/')
 	logging.info('Waggle filesystem monitor will monitor the following files/folders')
 	for target in targets:
 		logging.info('....%s' % target)
 
-	
+	wm = WatchManager()
+	mask = pyinotify.IN_DELETE | pyinotify.IN_ATTRIB | pyinotify.IN_MODIFY | pyinotify.IN_CLOSE_WRITE | pyinotify.IN_DELETE_SELF  # watched events
+
+	notifier = Notifier(wm, PTmp())
+	wdd = wm.add_watch(targets, mask, rec=True)
+
+	while True:
+		try:
+			notifier.process_events()
+			if notifier.check_events():
+				notifier.read_events()
+		except:
+			notifier.stop()
+			break
