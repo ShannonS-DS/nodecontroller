@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def get_monitor_target(path='/etc/waggle/'):
 	config_file = 'monitor-filesystem.conf'
 	targets = []
+	ignorances = []
 
 	if not os.path.isfile(path+config_file):
 		logging.error('Config file not found in %s' % path+config_file)
@@ -28,39 +29,28 @@ def get_monitor_target(path='/etc/waggle/'):
 			if '#' in line or line == '':
 				continue
 
-			target = line
-			if os.path.isfile(target) or os.path.isdir(target):
-				targets.append(line.strip())
+			if os.path.isfile(line[1:]) or os.path.isdir(line[1:]):
+				if line[0] == 'A':
+					targets.append(line[1:].strip())
+				elif line[0] == 'I':
+					ignorances.append(line[1:].strip())
+				else:
+					pass
 			else:
-				logging.error('Cannot watch the path: %s' % target)
+				logging.error('Cannot watch the path: %s' % line[1:])			
 
-	return targets
-
-def file_watch_handler(event):
-	file_name, event_type = event
-	print(event_type)
-	if 'MODIFY' in event_type or 'DELETE' in event_type:
-		logging.warn('%s has been modified' % file_name)
-
-def parse_event(event):
-	try:
-		event_split = event.strip().split()
-		print(len(event_split))
-		if len(event_split) == 2:
-			# File watch event
-			file_watch_handler(event)
-		elif len(event_split) == 3:
-			# Folder watch event
-			pass
-		else:
-			raise Exception()
-	except Exception:
-		logging.error('Cannot parse the event: %s' % event)
+	return targets, ignorances
 
 class PTmp(ProcessEvent):
+	def __init__(self, ignore_list):
+		self.ignorances = ignore_list
+
 	def report(self, event):
 		global logging
-		logging.info('%s has been changed: %s' % (event.pathname, event.maskname))
+
+		ignore = [True for i in self.ignorances if event.path == i]
+		if ignore == []:
+			logging.info('%s has been changed: %s' % (event.pathname, event.maskname))
 
 	def process_IN_ATTRIB(self, event):
 		self.report(event)
@@ -80,7 +70,7 @@ class PTmp(ProcessEvent):
 if __name__ == "__main__":
 	logging.info('Waggle filesystem monitor started...')
 
-	targets = get_monitor_target(path='../etc/')
+	targets, ignorances = get_monitor_target()
 	logging.info('Waggle filesystem monitor will monitor the following files/folders')
 	for target in targets:
 		logging.info('....%s' % target)
@@ -88,7 +78,7 @@ if __name__ == "__main__":
 	wm = WatchManager()
 	mask = pyinotify.IN_DELETE | pyinotify.IN_ATTRIB | pyinotify.IN_MODIFY | pyinotify.IN_CLOSE_WRITE | pyinotify.IN_DELETE_SELF  # watched events
 
-	notifier = Notifier(wm, PTmp())
+	notifier = Notifier(wm, PTmp(ignorances))
 	wdd = wm.add_watch(targets, mask, rec=True)
 
 	while True:
